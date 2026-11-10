@@ -844,6 +844,66 @@ namespace Microsoft.PowerShell.Commands
         }
 
         /// <summary>
+        /// Refreshes the details of a single systemd service that was found only in the
+        /// unit file list and therefore has no description or status information, using
+        /// a single 'systemctl show' invocation. Failures are ignored so that the
+        /// fallback values are used.
+        /// </summary>
+        /// <param name="service">The service to refresh.</param>
+        internal void RefreshServiceDetails(UnixServiceController service)
+        {
+            if (GetServiceManager().Kind != ServiceManagerKind.Systemd || service.Description is not null)
+            {
+                return;
+            }
+
+            string[] args =
+            {
+                "show",
+                service.Name + ".service",
+                "--property=Description,ActiveState,SubState",
+                "--no-pager",
+            };
+            ServiceCommandResult result = RunServiceManagerCommand(args, elevate: false);
+            if (result.ExitCode != 0)
+            {
+                return;
+            }
+
+            foreach (string rawLine in result.StandardOutput.Split('\n'))
+            {
+                string line = rawLine.TrimEnd('\r');
+                int separatorIndex = line.IndexOf('=');
+                if (separatorIndex < 0)
+                {
+                    continue;
+                }
+
+                string key = line[..separatorIndex];
+                string value = line[(separatorIndex + 1)..];
+                switch (key)
+                {
+                    case "Description":
+                        if (value.Length > 0)
+                        {
+                            service.Description = value;
+                            service.DisplayName = value;
+                        }
+
+                        break;
+
+                    case "ActiveState":
+                        service.Status = UnixServiceParser.MapSystemdStatus(value);
+                        break;
+
+                    case "SubState":
+                        service.SubState = value;
+                        break;
+                }
+            }
+        }
+
+        /// <summary>
         /// Builds the service manager arguments to retrieve the dependent or required
         /// services of a service. Returns null when the resolved service manager does
         /// not support this.
@@ -851,8 +911,7 @@ namespace Microsoft.PowerShell.Commands
         /// <param name="service">The service to get the dependencies of.</param>
         /// <param name="dependents">True for services that depend on the service, false for services the service depends on.</param>
         /// <returns>The argument list, or null when not supported.</returns>
-        internal List<string>? GetDependencyArguments(UnixServiceController service, bool dependents)
-        {
+        internal List<string>? GetDependencyArguments(UnixServiceController service, bool dependents)        {
             if (GetServiceManager().Kind != ServiceManagerKind.Systemd)
             {
                 return null;
@@ -1342,6 +1401,9 @@ namespace Microsoft.PowerShell.Commands
             {
                 if (string.Equals(service.Name, name, StringComparison.OrdinalIgnoreCase))
                 {
+                    // Services that were never loaded are only known by name; fetch
+                    // their details from the service manager when it supports it.
+                    RefreshServiceDetails(service);
                     return service;
                 }
             }
