@@ -50,6 +50,33 @@ exec "${@:2}"
 
         $env:PATH = "$script:shimDir$([System.IO.Path]::PathSeparator)$env:PATH"
         $env:PS_SERVICE_SHIM_LOG = $script:logFile
+
+        function Reset-Shim {
+            param(
+                [string]$Stdout = "",
+                [string]$UnitFilesStdout = "",
+                [string]$DependencyStdout = "",
+                [string]$Stderr = "",
+                [int]$ExitCode = 0
+            )
+
+            $env:PS_SERVICE_SHIM_STDOUT = $Stdout
+            $env:PS_SERVICE_SHIM_UF_STDOUT = $UnitFilesStdout
+            $env:PS_SERVICE_SHIM_DEP_STDOUT = $DependencyStdout
+            $env:PS_SERVICE_SHIM_STDERR = $Stderr
+            $env:PS_SERVICE_SHIM_EXITCODE = "$ExitCode"
+            if (Test-Path $script:logFile) {
+                Remove-Item $script:logFile -Force
+            }
+        }
+
+        function Get-InvocationLog {
+            if (Test-Path $script:logFile) {
+                return @(Get-Content $script:logFile)
+            }
+
+            return @()
+        }
     }
 
     AfterAll {
@@ -71,33 +98,6 @@ exec "${@:2}"
 
     BeforeEach {
         Reset-Shim
-    }
-
-    function Reset-Shim {
-        param(
-            [string]$Stdout = "",
-            [string]$UnitFilesStdout = "",
-            [string]$DependencyStdout = "",
-            [string]$Stderr = "",
-            [int]$ExitCode = 0
-        )
-
-        $env:PS_SERVICE_SHIM_STDOUT = $Stdout
-        $env:PS_SERVICE_SHIM_UF_STDOUT = $UnitFilesStdout
-        $env:PS_SERVICE_SHIM_DEP_STDOUT = $DependencyStdout
-        $env:PS_SERVICE_SHIM_STDERR = $Stderr
-        $env:PS_SERVICE_SHIM_EXITCODE = "$ExitCode"
-        if (Test-Path $script:logFile) {
-            Remove-Item $script:logFile -Force
-        }
-    }
-
-    function Get-InvocationLog {
-        if (Test-Path $script:logFile) {
-            return @(Get-Content $script:logFile)
-        }
-
-        return @()
     }
 
     Context "systemd (systemctl)" {
