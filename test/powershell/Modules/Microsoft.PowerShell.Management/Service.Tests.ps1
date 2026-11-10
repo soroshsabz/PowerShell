@@ -19,21 +19,28 @@ Describe "Unix Service cmdlets" -Tags "CI" {
         New-Item -ItemType Directory -Path $script:shimDir -Force | Out-Null
         New-Item -ItemType Directory -Path $script:emptyDir -Force | Out-Null
 
+        # The shim uses '/bin/bash' directly (not '/usr/bin/env bash') so that it also
+        # works when PATH is restricted to the shim directory. Enumeration commands
+        # always exit 0 unless PS_SERVICE_SHIM_ENUM_FAILS is set, so that operation
+        # failures can be tested independently of service enumeration.
         $managerShimBody = @'
-#!/usr/bin/env bash
+#!/bin/bash
 printf '%s\n' "$*" >> "$PS_SERVICE_SHIM_LOG"
 case "$1" in
-    list-unit-files) stdout="$PS_SERVICE_SHIM_UF_STDOUT" ;;
-    list-dependencies) stdout="$PS_SERVICE_SHIM_DEP_STDOUT" ;;
+    list-unit-files) stdout="$PS_SERVICE_SHIM_UF_STDOUT"; enum=1 ;;
+    list-dependencies) stdout="$PS_SERVICE_SHIM_DEP_STDOUT"; enum=1 ;;
+    list-units|list|--all|--status-all) enum=1 ;;
     *) stdout="$PS_SERVICE_SHIM_STDOUT" ;;
 esac
 if [ -n "$stdout" ]; then printf '%s' "$stdout"; fi
 if [ -n "$PS_SERVICE_SHIM_STDERR" ]; then printf '%s' "$PS_SERVICE_SHIM_STDERR" >&2; fi
-exit "${PS_SERVICE_SHIM_EXITCODE:-0}"
+code="${PS_SERVICE_SHIM_EXITCODE:-0}"
+if [ "$enum" = "1" ] && [ -z "$PS_SERVICE_SHIM_ENUM_FAILS" ]; then code=0; fi
+exit "$code"
 '@
 
         $sudoShimBody = @'
-#!/usr/bin/env bash
+#!/bin/bash
 printf '%s\n' "$*" >> "$PS_SERVICE_SHIM_LOG"
 exec "${@:2}"
 '@
@@ -65,6 +72,7 @@ exec "${@:2}"
             $env:PS_SERVICE_SHIM_DEP_STDOUT = $DependencyStdout
             $env:PS_SERVICE_SHIM_STDERR = $Stderr
             $env:PS_SERVICE_SHIM_EXITCODE = "$ExitCode"
+            $env:PS_SERVICE_SHIM_ENUM_FAILS = ""
             if (Test-Path $script:logFile) {
                 Remove-Item $script:logFile -Force
             }
@@ -91,6 +99,7 @@ exec "${@:2}"
         Remove-Item Env:\PS_SERVICE_SHIM_DEP_STDOUT -ErrorAction SilentlyContinue
         Remove-Item Env:\PS_SERVICE_SHIM_STDERR -ErrorAction SilentlyContinue
         Remove-Item Env:\PS_SERVICE_SHIM_EXITCODE -ErrorAction SilentlyContinue
+        Remove-Item Env:\PS_SERVICE_SHIM_ENUM_FAILS -ErrorAction SilentlyContinue
         if ($script:shimDir -and (Test-Path $script:shimDir)) {
             Remove-Item $script:shimDir -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -177,11 +186,11 @@ exec "${@:2}"
             $log = Get-InvocationLog
             $expected = "stop sshd.service"
             if ($script:isRoot) {
-                $log[0] | Should -Be $expected
+                $log[-1] | Should -Be $expected
             } else {
                 # the operation is wrapped with 'sudo -n' when not running as root
-                $log[0] | Should -Be "-n $script:shimDir/systemctl $expected"
-                $log[1] | Should -Be $expected
+                $log[-2] | Should -Be "-n $script:shimDir/systemctl $expected"
+                $log[-1] | Should -Be $expected
             }
         }
 
@@ -217,9 +226,9 @@ exec "${@:2}"
             Get-Service -Name "sshd" | Stop-Service
             (Get-InvocationLog)[-1] | Should -Match "stop sshd\.service"
 
-            Reset-Shim
+            $countAfterEnumeration = (Get-InvocationLog).Count
             Get-Service -Name "sshd" | Stop-Service -WhatIf
-            Get-InvocationLog.Count | Should -Be 0
+            (Get-InvocationLog).Count | Should -Be $countAfterEnumeration
         }
 
         It "reports a non-terminating error with stderr when the command fails" {
@@ -227,6 +236,14 @@ exec "${@:2}"
 
             { Stop-Service -Name "sshd" -ErrorAction Stop } |
                 Should -Throw -ErrorId "CouldNotStopService,Microsoft.PowerShell.Commands.StopServiceCommand"
+        }
+
+        It "throws a terminating error when the service manager enumeration fails" {
+            Reset-Shim -Stdout "sshd.service loaded active running OpenSSH server daemon" -Stderr "System has not been booted with systemd" -ExitCode 1
+            $env:PS_SERVICE_SHIM_ENUM_FAILS = "1"
+
+            { Stop-Service -Name "sshd" -ErrorAction Stop } |
+                Should -Throw -ErrorId "ServiceEnumerationFailed,Microsoft.PowerShell.Commands.StopServiceCommand"
         }
 
         It "reports a clear error when sudo requires a password" {
@@ -242,12 +259,12 @@ exec "${@:2}"
         }
 
         It "Get-Service -DependentServices lists services depending on the service" {
-            Reset-Shim -Stdout "sshd.service loaded active running OpenSSH server daemon`nmulti-user.target loaded active running Multi-User System" `
+            Reset-Shim -Stdout "sshd.service loaded active running OpenSSH server daemon`nnetwork.service loaded active running Network" `
                 -UnitFilesStdout "sshd.service enabled enabled" `
-                -DependencyStdout "multi-user.target`nsshd.socket"
+                -DependencyStdout "network.service`nsshd.socket"
 
             $dependents = Get-Service -Name "sshd" -DependentServices
-            $dependents.Name | Should -Contain "multi-user.target"
+            $dependents.Name | Should -Contain "network"
         }
 
         It "Get-Service -RequiredServices lists services the service depends on" {
@@ -263,19 +280,21 @@ exec "${@:2}"
     Context "fallback service managers" {
         It "uses launchctl when systemctl is not available" {
             $systemctlShim = Join-Path $script:shimDir "systemctl"
-            $backupPath = "$systemctlShim.bak"
-            Move-Item $systemctlShim $backupPath
+            Move-Item $systemctlShim "$systemctlShim.bak"
+            # restrict PATH to the shim directory so that the real systemctl on the
+            # system is not found either
+            $env:PATH = $script:shimDir
             try {
                 Reset-Shim -Stdout "PID`tStatus`tLabel`n-`t0`tcom.example.stopped`n123`t0`tcom.example.running"
 
                 $services = Get-Service
-                $running = $services | Where-Object { $_.Name -eq "com.example.running" }
-                $running.Status.ToString() | Should -Be "Running"
+                ($services | Where-Object { $_.Name -eq "com.example.running" }).Status.ToString() | Should -Be "Running"
                 ($services | Where-Object { $_.Name -eq "com.example.stopped" }).Status.ToString() | Should -Be "Stopped"
 
                 (Get-InvocationLog)[0] | Should -Be "list"
             } finally {
-                Move-Item $backupPath $systemctlShim
+                Move-Item "$systemctlShim.bak" $systemctlShim
+                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
             }
         }
 
@@ -284,6 +303,7 @@ exec "${@:2}"
             $launchctlShim = Join-Path $script:shimDir "launchctl"
             Move-Item $systemctlShim "$systemctlShim.bak"
             Move-Item $launchctlShim "$launchctlShim.bak"
+            $env:PATH = $script:shimDir
             try {
                 Reset-Shim -Stdout " * sshd                                                                                    [ started ]`n * cron                                                                                     [ stopped ]"
 
@@ -295,6 +315,7 @@ exec "${@:2}"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
                 Move-Item "$launchctlShim.bak" $launchctlShim
+                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
             }
         }
 
@@ -305,6 +326,7 @@ exec "${@:2}"
             Move-Item $systemctlShim "$systemctlShim.bak"
             Move-Item $launchctlShim "$launchctlShim.bak"
             Move-Item $rcServiceShim "$rcServiceShim.bak"
+            $env:PATH = $script:shimDir
             try {
                 Reset-Shim -Stderr "[ + ]  sshd`n[ - ]  cron"
 
@@ -312,11 +334,12 @@ exec "${@:2}"
                 ($services | Where-Object { $_.Name -eq "sshd" }).Status.ToString() | Should -Be "Running"
                 ($services | Where-Object { $_.Name -eq "cron" }).Status.ToString() | Should -Be "Stopped"
 
-                Get-InvocationLog[0] | Should -Be "--status-all"
+                (Get-InvocationLog)[0] | Should -Be "--status-all"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
                 Move-Item "$launchctlShim.bak" $launchctlShim
                 Move-Item "$rcServiceShim.bak" $rcServiceShim
+                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
             }
         }
 
