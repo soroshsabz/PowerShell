@@ -291,6 +291,9 @@ exec "${@:2}"
                 ($services | Where-Object { $_.Name -eq "com.example.running" }).Status.ToString() | Should -Be "Running"
                 ($services | Where-Object { $_.Name -eq "com.example.stopped" }).Status.ToString() | Should -Be "Stopped"
 
+                Write-Host "DEBUG log bytes: $([IO.File]::ReadAllBytes($script:logFile).Count)"
+                Write-Host "DEBUG log text: [$([IO.File]::ReadAllText($script:logFile))]"
+
                 (Get-InvocationLog)[0] | Should -Be "list"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
