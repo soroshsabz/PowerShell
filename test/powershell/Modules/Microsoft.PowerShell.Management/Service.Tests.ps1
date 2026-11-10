@@ -294,7 +294,7 @@ exec "${@:2}"
                 (Get-InvocationLog)[0] | Should -Be "list"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
-                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
+                $env:PATH = "$script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath"
             }
         }
 
@@ -315,7 +315,7 @@ exec "${@:2}"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
                 Move-Item "$launchctlShim.bak" $launchctlShim
-                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
+                $env:PATH = "$script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath"
             }
         }
 
@@ -339,7 +339,7 @@ exec "${@:2}"
                 Move-Item "$systemctlShim.bak" $systemctlShim
                 Move-Item "$launchctlShim.bak" $launchctlShim
                 Move-Item "$rcServiceShim.bak" $rcServiceShim
-                $env:PATH = $script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath
+                $env:PATH = "$script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath"
             }
         }
 
