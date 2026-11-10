@@ -80,10 +80,11 @@ exec "${@:2}"
 
         function Get-InvocationLog {
             if (Test-Path $script:logFile) {
-                return @(Get-Content $script:logFile)
+                # the unary comma preserves the array when the file has a single line
+                return , @(Get-Content $script:logFile)
             }
 
-            return @()
+            return , @()
         }
     }
 
@@ -226,8 +227,9 @@ exec "${@:2}"
             Get-Service -Name "sshd" | Stop-Service
             (Get-InvocationLog)[-1] | Should -Match "stop sshd\.service"
 
+            $services = Get-Service -Name "sshd"
             $countAfterEnumeration = (Get-InvocationLog).Count
-            Get-Service -Name "sshd" | Stop-Service -WhatIf
+            $services | Stop-Service -WhatIf
             (Get-InvocationLog).Count | Should -Be $countAfterEnumeration
         }
 
@@ -291,9 +293,6 @@ exec "${@:2}"
                 ($services | Where-Object { $_.Name -eq "com.example.running" }).Status.ToString() | Should -Be "Running"
                 ($services | Where-Object { $_.Name -eq "com.example.stopped" }).Status.ToString() | Should -Be "Stopped"
 
-                Write-Host "DEBUG log bytes: $([IO.File]::ReadAllBytes($script:logFile).Count)"
-                Write-Host "DEBUG log text: [$([IO.File]::ReadAllText($script:logFile))]"
-
                 (Get-InvocationLog)[0] | Should -Be "list"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
@@ -301,11 +300,13 @@ exec "${@:2}"
             }
         }
 
-        It "uses rc-service when systemctl and launchctl are not available" {
+        It "uses rc-service when systemctl, launchctl and service are not available" {
             $systemctlShim = Join-Path $script:shimDir "systemctl"
             $launchctlShim = Join-Path $script:shimDir "launchctl"
+            $serviceShim = Join-Path $script:shimDir "service"
             Move-Item $systemctlShim "$systemctlShim.bak"
             Move-Item $launchctlShim "$launchctlShim.bak"
+            Move-Item $serviceShim "$serviceShim.bak"
             $env:PATH = $script:shimDir
             try {
                 Reset-Shim -Stdout " * sshd                                                                                    [ started ]`n * cron                                                                                     [ stopped ]"
@@ -318,6 +319,7 @@ exec "${@:2}"
             } finally {
                 Move-Item "$systemctlShim.bak" $systemctlShim
                 Move-Item "$launchctlShim.bak" $launchctlShim
+                Move-Item "$serviceShim.bak" $serviceShim
                 $env:PATH = "$script:shimDir$([System.IO.Path]::PathSeparator)$script:originalPath"
             }
         }
