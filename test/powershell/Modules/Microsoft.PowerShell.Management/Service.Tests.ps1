@@ -29,7 +29,7 @@ printf '%s\n' "$*" >> "$PS_SERVICE_SHIM_LOG"
 case "$1" in
     list-unit-files) stdout="$PS_SERVICE_SHIM_UF_STDOUT"; enum=1 ;;
     list-dependencies) stdout="$PS_SERVICE_SHIM_DEP_STDOUT"; enum=1 ;;
-    list-units|list|--all|--status-all) enum=1 ;;
+    list-units|list|--all|--status-all) stdout="$PS_SERVICE_SHIM_STDOUT"; enum=1 ;;
     *) stdout="$PS_SERVICE_SHIM_STDOUT" ;;
 esac
 if [ -n "$stdout" ]; then printf '%s' "$stdout"; fi
